@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Cloud Storage</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="container">
+
+    <h2>NEON CLOUD STORAGE</h2>
+
+    <div class="upload-card">
+        <label for="fileInput" class="upload-label" style="display:block; width:100%; height:100%;">
+            <span class="icon">☁️</span>
+            Pilih File untuk Upload
+        </label>
+        <input type="file" id="fileInput" hidden>
+    </div>
+
+    <div id="progressBox" class="progress-box hidden">
+        <div id="progressBar" class="progress-bar"></div>
+    </div>
+
+    <h3>Daftar File</h3>
+    <div id="fileList" class="file-list">
+        <p style="grid-column: span 2; text-align: center; color: #a1a1aa;">Memuat data...</p>
+    </div>
+
+</div>
+
+<script type="module">
+    // --- 1. IMPORT FIREBASE ---
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getStorage, ref, uploadBytesResumable, getDownloadURL } 
+        from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+    import { getFirestore, collection, addDoc, getDocs, orderBy, query } 
+        from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    // --- 2. KONFIGURASI (WAJIB DIGANTI) ---
+    // Copy dari Firebase Console: Project Settings > General > Your Apps
+    const firebaseConfig = {
+        apiKey: "GANTI_DENGAN_API_KEY_KAMU",
+        authDomain: "PROJECT_ID.firebaseapp.com",
+        projectId: "PROJECT_ID",
+        storageBucket: "PROJECT_ID.appspot.com",
+        messagingSenderId: "NOMOR_ID",
+        appId: "APP_ID"
+    };
+
+    // Initialize
+    const app = initializeApp(firebaseConfig);
+    const storage = getStorage(app);
+    const db = getFirestore(app);
+
+    // DOM Elements
+    const fileInput = document.getElementById("fileInput");
+    const progressBox = document.getElementById("progressBox");
+    const progressBar = document.getElementById("progressBar");
+    const fileList = document.getElementById("fileList");
+
+    // --- 3. UPLOAD FILE ---
+    fileInput.addEventListener("change", async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        progressBox.classList.remove("hidden");
+        progressBar.style.width = "0%";
+
+        // Simpan ke Storage dengan nama unik (pake timestamp)
+        const storageRef = ref(storage, 'uploads/' + Date.now() + '_' + file.name);
+        const uploadTask = uploadBytesResumable(storageRef, file);
+
+        uploadTask.on('state_changed', 
+            (snapshot) => {
+                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                progressBar.style.width = progress + "%";
+            }, 
+            (error) => {
+                console.error(error);
+                alert("Gagal upload!");
+                progressBox.classList.add("hidden");
+            }, 
+            async () => {
+                // Upload Sukses -> Ambil URL
+                const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                
+                // Simpan info file ke Database
+                await addDoc(collection(db, "files"), {
+                    name: file.name,
+                    url: downloadURL,
+                    type: file.type,
+                    createdAt: Date.now()
+                });
+
+                // Reset Tampilan
+                setTimeout(() => {
+                    progressBox.classList.add("hidden");
+                    fileInput.value = ""; 
+                    loadFiles(); // Refresh otomatis
+                }, 1000);
+            }
+        );
+    });
+
+    // --- 4. LOAD & RENDER FILES ---
+    async function loadFiles() {
+        fileList.innerHTML = "";
+        
+        try {
+            const q = query(collection(db, "files"), orderBy("createdAt", "desc"));
+            const querySnapshot = await getDocs(q);
+
+            if (querySnapshot.empty) {
+                fileList.innerHTML = "<p style='grid-column: span 2; text-align: center; color: #a1a1aa;'>Belum ada file.</p>";
+                return;
+            }
+
+            querySnapshot.forEach((doc) => {
+                const f = doc.data();
+                
+                // Bikin Element HTML untuk tiap file
+                const item = document.createElement("div");
+                item.className = "file-item";
+
+                let previewHTML = "";
+                
+                // Cek Tipe File untuk Preview
+                if (f.name.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) || f.type.includes('image')) {
+                    previewHTML = `<div class="preview"><img src="${f.url}" loading="lazy"></div>`;
+                } else if (f.name.match(/\.(mp4|webm|mkv)$/i) || f.type.includes('video')) {
+                    previewHTML = `<div class="preview"><video src="${f.url}" controls></video></div>`;
+                } else if (f.name.match(/\.(mp3|wav|ogg)$/i) || f.type.includes('audio')) {
+                    previewHTML = `<div class="preview preview-audio"><div class="audio-icon">🎵</div><audio controls src="${f.url}"></audio></div>`;
+                } else {
+                    let icon = "📄";
+                    if (f.name.match(/\.pdf$/i)) icon = "📕";
+                    if (f.name.match(/\.(zip|rar)$/i)) icon = "📦";
+                    previewHTML = `<div class="preview preview-file"><div class="file-icon-large">${icon}</div></div>`;
+                }
+
+                item.innerHTML = `
+                    <div class="file-content">
+                        ${previewHTML}
+                        <span class="file-name" title="${f.name}">${f.name}</span>
+                    </div>
+                    <a href="${f.url}" target="_blank" class="file-btn" style="text-align:center; text-decoration:none; display:block;">Download</a>
+                `;
+
+                fileList.appendChild(item);
+            });
+
+        } catch (error) {
+            console.error("Error load data:", error);
+        }
+    }
+
+    // Jalankan saat pertama buka
+    loadFiles();
+</script>
+
+</body>
+</html>
