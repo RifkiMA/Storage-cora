@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Neon Cloud Storage</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -31,29 +32,14 @@
 
 </div>
 
-<script type="module">
-    // --- 1. IMPORT FIREBASE ---
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import { getStorage, ref, uploadBytesResumable, getDownloadURL } 
-        from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
-    import { getFirestore, collection, addDoc, getDocs, orderBy, query } 
-        from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+<script>
+    // --- 1. KONFIGURASI SUPABASE (SUDAH DIPASANG) ---
+    const SUPABASE_URL = "https://tolpssxxrmxpavchvboj.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbHBzc3h4cm14cGF2Y2h2Ym9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUzNjQ4NzQsImV4cCI6MjA4MDk0MDg3NH0.KUNevhVtgsutkYGKb9OQ8QJXkiJcR_Zq1HVbeeiCsyM";
 
-    // --- 2. KONFIGURASI (WAJIB DIGANTI) ---
-    // Copy dari Firebase Console: Project Settings > General > Your Apps
-    const firebaseConfig = {
-        apiKey: "GANTI_DENGAN_API_KEY_KAMU",
-        authDomain: "PROJECT_ID.firebaseapp.com",
-        projectId: "PROJECT_ID",
-        storageBucket: "PROJECT_ID.appspot.com",
-        messagingSenderId: "NOMOR_ID",
-        appId: "APP_ID"
-    };
-
-    // Initialize
-    const app = initializeApp(firebaseConfig);
-    const storage = getStorage(app);
-    const db = getFirestore(app);
+    // Inisialisasi Client
+    const { createClient } = supabase;
+    const _supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
     // DOM Elements
     const fileInput = document.getElementById("fileInput");
@@ -61,103 +47,123 @@
     const progressBar = document.getElementById("progressBar");
     const fileList = document.getElementById("fileList");
 
-    // --- 3. UPLOAD FILE ---
+    // --- 2. UPLOAD FILE ---
     fileInput.addEventListener("change", async () => {
         const file = fileInput.files[0];
         if (!file) return;
 
         progressBox.classList.remove("hidden");
-        progressBar.style.width = "0%";
+        progressBar.style.width = "30%"; // Simulasi loading awal
 
-        // Simpan ke Storage dengan nama unik (pake timestamp)
-        const storageRef = ref(storage, 'uploads/' + Date.now() + '_' + file.name);
-        const uploadTask = uploadBytesResumable(storageRef, file);
+        try {
+            // A. Upload ke Storage Bucket "files"
+            // Kita bersihkan nama file dari spasi agar link-nya aman
+            const cleanName = file.name.replace(/\s+/g, '_');
+            const fileName = Date.now() + "_" + cleanName;
+            
+            const { data, error } = await _supabase
+                .storage
+                .from('files') // Pastikan nama bucket di Supabase adalah 'files'
+                .upload(fileName, file);
 
-        uploadTask.on('state_changed', 
-            (snapshot) => {
-                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                progressBar.style.width = progress + "%";
-            }, 
-            (error) => {
-                console.error(error);
-                alert("Gagal upload!");
+            if (error) throw error;
+
+            progressBar.style.width = "70%";
+
+            // B. Ambil URL Publik agar bisa dilihat orang lain
+            const { data: publicData } = _supabase
+                .storage
+                .from('files')
+                .getPublicUrl(fileName);
+            
+            const publicURL = publicData.publicUrl;
+
+            // C. Simpan Info ke Tabel Database "uploads"
+            const { error: dbError } = await _supabase
+                .from('uploads') // Pastikan nama tabel di Supabase adalah 'uploads'
+                .insert([
+                    { 
+                        file_name: file.name, 
+                        file_url: publicURL,
+                        file_type: file.type 
+                    }
+                ]);
+
+            if (dbError) throw dbError;
+
+            // D. Selesai
+            progressBar.style.width = "100%";
+            
+            setTimeout(() => {
                 progressBox.classList.add("hidden");
-            }, 
-            async () => {
-                // Upload Sukses -> Ambil URL
-                const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                
-                // Simpan info file ke Database
-                await addDoc(collection(db, "files"), {
-                    name: file.name,
-                    url: downloadURL,
-                    type: file.type,
-                    createdAt: Date.now()
-                });
+                fileInput.value = "";
+                loadFiles(); // Refresh list otomatis
+            }, 1000);
 
-                // Reset Tampilan
-                setTimeout(() => {
-                    progressBox.classList.add("hidden");
-                    fileInput.value = ""; 
-                    loadFiles(); // Refresh otomatis
-                }, 1000);
-            }
-        );
+        } catch (err) {
+            console.error("Upload Error:", err);
+            alert("Gagal Upload: " + err.message);
+            progressBox.classList.add("hidden");
+        }
     });
 
-    // --- 4. LOAD & RENDER FILES ---
+    // --- 3. LOAD FILES ---
     async function loadFiles() {
         fileList.innerHTML = "";
         
-        try {
-            const q = query(collection(db, "files"), orderBy("createdAt", "desc"));
-            const querySnapshot = await getDocs(q);
+        // Ambil data dari tabel "uploads", urutkan dari yang terbaru (created_at desc)
+        const { data, error } = await _supabase
+            .from('uploads')
+            .select('*')
+            .order('created_at', { ascending: false });
 
-            if (querySnapshot.empty) {
-                fileList.innerHTML = "<p style='grid-column: span 2; text-align: center; color: #a1a1aa;'>Belum ada file.</p>";
-                return;
+        if (error) {
+            console.error("Gagal memuat data:", error);
+            fileList.innerHTML = "<p style='color:red; text-align:center;'>Gagal koneksi database.</p>";
+            return;
+        }
+
+        if (!data || data.length === 0) {
+            fileList.innerHTML = "<p style='grid-column: span 2; text-align: center; color: #a1a1aa;'>Belum ada file.</p>";
+            return;
+        }
+
+        // Render setiap file ke layar
+        data.forEach(f => {
+            const item = document.createElement("div");
+            item.className = "file-item";
+            
+            let previewHTML = "";
+            const fileUrl = f.file_url;
+            const fileName = f.file_name;
+            const fileType = f.file_type || "";
+
+            // Deteksi Tipe File untuk Preview
+            if (fileType.startsWith("image/") || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+                previewHTML = `<div class="preview"><img src="${fileUrl}" loading="lazy"></div>`;
+            } else if (fileType.startsWith("video/") || fileName.match(/\.(mp4|webm)$/i)) {
+                previewHTML = `<div class="preview"><video src="${fileUrl}" controls></video></div>`;
+            } else if (fileType.startsWith("audio/") || fileName.match(/\.(mp3|wav)$/i)) {
+                previewHTML = `<div class="preview preview-audio"><div class="audio-icon">🎵</div><audio controls src="${fileUrl}"></audio></div>`;
+            } else {
+                let icon = "📄";
+                if (fileName.match(/\.pdf$/i)) icon = "📕";
+                if (fileName.match(/\.(zip|rar)$/i)) icon = "📦";
+                previewHTML = `<div class="preview preview-file"><div class="file-icon-large">${icon}</div></div>`;
             }
 
-            querySnapshot.forEach((doc) => {
-                const f = doc.data();
-                
-                // Bikin Element HTML untuk tiap file
-                const item = document.createElement("div");
-                item.className = "file-item";
-
-                let previewHTML = "";
-                
-                // Cek Tipe File untuk Preview
-                if (f.name.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) || f.type.includes('image')) {
-                    previewHTML = `<div class="preview"><img src="${f.url}" loading="lazy"></div>`;
-                } else if (f.name.match(/\.(mp4|webm|mkv)$/i) || f.type.includes('video')) {
-                    previewHTML = `<div class="preview"><video src="${f.url}" controls></video></div>`;
-                } else if (f.name.match(/\.(mp3|wav|ogg)$/i) || f.type.includes('audio')) {
-                    previewHTML = `<div class="preview preview-audio"><div class="audio-icon">🎵</div><audio controls src="${f.url}"></audio></div>`;
-                } else {
-                    let icon = "📄";
-                    if (f.name.match(/\.pdf$/i)) icon = "📕";
-                    if (f.name.match(/\.(zip|rar)$/i)) icon = "📦";
-                    previewHTML = `<div class="preview preview-file"><div class="file-icon-large">${icon}</div></div>`;
-                }
-
-                item.innerHTML = `
-                    <div class="file-content">
-                        ${previewHTML}
-                        <span class="file-name" title="${f.name}">${f.name}</span>
-                    </div>
-                    <a href="${f.url}" target="_blank" class="file-btn" style="text-align:center; text-decoration:none; display:block;">Download</a>
-                `;
-
-                fileList.appendChild(item);
-            });
-
-        } catch (error) {
-            console.error("Error load data:", error);
-        }
+            item.innerHTML = `
+                <div class="file-content">
+                    ${previewHTML}
+                    <span class="file-name" title="${fileName}">${fileName}</span>
+                </div>
+                <a href="${fileUrl}" target="_blank" class="file-btn" style="text-align:center; text-decoration:none; display:block;">Download</a>
+            `;
+            fileList.appendChild(item);
+        });
     }
 
-    // Jalankan saat pertama buka
+    // Load saat pertama kali web dibuka
     loadFiles();
 </script>
 
